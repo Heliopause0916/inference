@@ -490,7 +490,7 @@ def test_builtin_gemma_4_mlx_specs_declare_drafter():
     assert spec_12b.draft_quantizations[0] == "bf16"
 
 
-def test_builtin_gemma_4_vllm_requires_mtp_dependencies():
+def test_builtin_gemma_4_vllm_pins():
     from ....core.utils import filter_virtualenv_packages_by_markers
     from ..llm_family import BUILTIN_LLM_FAMILIES
 
@@ -507,12 +507,12 @@ def test_builtin_gemma_4_vllm_requires_mtp_dependencies():
         for requirement in [Requirement(package.split(";", 1)[0].strip())]
     }
 
-    assert requirements["vllm"].specifier.contains("0.22.0")
-    assert not requirements["vllm"].specifier.contains("0.21.0")
-    assert requirements["transformers"].specifier.contains("5.8.0")
-    assert not requirements["transformers"].specifier.contains("5.7.0")
+    assert requirements["vllm"].specifier.contains("0.18.1")
+    assert not requirements["vllm"].specifier.contains("0.22.0")
+    assert requirements["transformers"].specifier.contains("4.57.6")
+    assert not requirements["transformers"].specifier.contains("5.8.0")
     assert isinstance(family.virtualenv.extra_index_url, list)
-    assert "https://wheels.vllm.ai/0.22.0/cu130" in family.virtualenv.extra_index_url
+    assert "https://wheels.vllm.ai/0.18.1/cu129" in family.virtualenv.extra_index_url
 
 
 def test_builtin_gemma_4_sglang_requires_supported_runtime():

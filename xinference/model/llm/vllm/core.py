@@ -177,7 +177,7 @@ def _get_transformers_version() -> Optional[version.Version]:
     return version.parse(transformers.__version__)
 
 
-DEFAULT_VLLM_VERSION = version.parse("0.21.0")
+DEFAULT_VLLM_VERSION = version.parse("0.18.1")
 
 
 def _get_effective_vllm_version() -> version.Version:

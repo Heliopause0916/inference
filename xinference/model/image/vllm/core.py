@@ -163,16 +163,13 @@ class VLLMDiffusionModel:
         try:
             from vllm_omni.entrypoints.omni import Omni
         except ImportError as e:
-            error_message = f"Failed to import module 'vllm_omni': {e}"
-            installation_guide = [
-                "Please make sure 'vllm-omni' is installed and that the installed ",
-                "'vllm' shares the same major.minor version (e.g. vllm-omni 0.24.x ",
-                "requires vllm 0.24.x). You can install a matching pair by ",
-                "`pip install 'vllm-omni==0.24.*' 'vllm==0.24.*'`\n",
-            ]
-            raise ImportError(
-                f"{error_message}\n\n{''.join(installation_guide)}"
-            ) from e
+            error_message = (
+                "vllm-omni support is not available: vllm-omni has been removed "
+                "on this branch (V100/SM70 build pins vllm==0.18.1, where "
+                "vllm-omni is not officially supported). Install a matching "
+                "vllm-omni yourself only if you accept the SM70 limitations."
+            )
+            raise ValueError(f"{error_message} ({e})") from e
 
         logger.debug(
             "Loading vLLM-Omni diffusion model from %s, kwargs: %s",

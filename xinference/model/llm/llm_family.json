@@ -26181,8 +26181,8 @@
         "#system_numpy# ; #engine# == \"vllm\""
       ],
       "extra_index_url": [
-        "https://wheels.vllm.ai/0.14.0/cu130",
-        "https://download.pytorch.org/whl/cu130"
+        "https://wheels.vllm.ai/0.18.1/cu129",
+        "https://download.pytorch.org/whl/cu129"
       ],
       "index_strategy": "unsafe-best-match"
     },
@@ -26333,8 +26333,8 @@
         "#system_numpy# ; #engine# == \"vllm\""
       ],
       "extra_index_url": [
-        "https://wheels.vllm.ai/0.14.0/cu130",
-        "https://download.pytorch.org/whl/cu130"
+        "https://wheels.vllm.ai/0.18.1/cu129",
+        "https://download.pytorch.org/whl/cu129"
       ],
       "index_strategy": "unsafe-best-match"
     },
@@ -30174,7 +30174,7 @@
         "qwen_omni_utils==0.0.9 ; #engine# == \"vllm\"",
         "audioread ; #engine# == \"vllm\"",
         "#system_numpy# ; #engine# == \"vllm\"",
-        "vllm==0.21.0 ; #engine# == \"vllm\"",
+        "vllm==0.18.1 ; #engine# == \"vllm\"",
         "transformers==4.57.6 ; #engine# == \"vllm\"",
         "ninja ; #engine# == \"vllm\"",
         "#llama_cpp_dependencies# ; #engine# == \"llama.cpp\""
@@ -30908,8 +30908,8 @@
         "#transformers_dependencies# ; #engine# == \"Transformers\"",
         "#mlx_dependencies# ; #engine# == \"MLX\"",
         "mlx-vlm>=0.6.1 ; #engine# == \"MLX\"",
-        "vllm>=0.22.0 ; #engine# == \"vllm\"",
-        "transformers>=5.8.0 ; #engine# == \"vllm\"",
+        "vllm==0.18.1 ; #engine# == \"vllm\"",
+        "transformers==4.57.6 ; #engine# == \"vllm\"",
         "qwen_omni_utils ; #engine# == \"vllm\"",
         "audioread ; #engine# == \"vllm\"",
         "#sglang_dependencies# ; #engine# == \"sglang\"",
@@ -30923,8 +30923,8 @@
         "#system_numpy# ; #engine# == \"vllm\""
       ],
       "extra_index_url": [
-        "https://wheels.vllm.ai/0.22.0/cu130",
-        "https://download.pytorch.org/whl/cu130"
+        "https://wheels.vllm.ai/0.18.1/cu129",
+        "https://download.pytorch.org/whl/cu129"
       ],
       "index_strategy": "unsafe-best-match"
     },
@@ -31184,7 +31184,7 @@
         "qwen_omni_utils ; #engine# == \"vllm\"",
         "audioread ; #engine# == \"vllm\"",
         "#system_numpy# ; #engine# == \"vllm\"",
-        "vllm==0.21.0 ; #engine# == \"vllm\"",
+        "vllm==0.18.1 ; #engine# == \"vllm\"",
         "ninja ; #engine# == \"vllm\"",
         "#llama_cpp_dependencies# ; #engine# == \"llama.cpp\""
       ]
@@ -33038,7 +33038,7 @@
         "qwen_omni_utils ; #engine# == \"vllm\"",
         "audioread ; #engine# == \"vllm\"",
         "#system_numpy# ; #engine# == \"vllm\"",
-        "vllm==0.21.0 ; #engine# == \"vllm\"",
+        "vllm==0.18.1 ; #engine# == \"vllm\"",
         "transformers==4.57.6 ; #engine# == \"vllm\"",
         "ninja ; #engine# == \"vllm\"",
         "#llama_cpp_dependencies# ; #engine# == \"llama.cpp\""
@@ -33869,12 +33869,12 @@
         "qwen-vl-utils!=0.0.9 ; #engine# == \"Transformers\"",
         "qwen_omni_utils==0.0.9 ; #engine# == \"vllm\"",
         "#system_numpy# ; #engine# == \"vllm\"",
-        "vllm==0.22.1 ; #engine# == \"vllm\"",
+        "vllm==0.18.1 ; #engine# == \"vllm\"",
         "transformers==4.57.6 ; #engine# == \"vllm\""
       ],
       "extra_index_url": [
-        "https://wheels.vllm.ai/0.22.1/cu130",
-        "https://download.pytorch.org/whl/cu130"
+        "https://wheels.vllm.ai/0.18.1/cu129",
+        "https://download.pytorch.org/whl/cu129"
       ],
       "index_strategy": "unsafe-best-match"
     },

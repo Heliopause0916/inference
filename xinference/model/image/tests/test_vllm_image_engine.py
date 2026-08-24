@@ -485,28 +485,21 @@ async def test_serial_fallback_without_engine_internals(
     assert result["data"][0]["b64_json"]
 
 
-def test_builtin_specs_have_vllm_virtualenv_marker():
+def test_builtin_specs_pin_vllm_version():
     for model_name in VLLM_SUPPORTED_IMAGE_MODELS:
         for spec in BUILTIN_IMAGE_MODELS[model_name]:
             packages = spec.virtualenv.packages if spec.virtualenv else []
-            omni = [
-                pkg
-                for pkg in packages
-                if pkg.startswith("vllm-omni") and '#engine# == "vLLM"' in pkg
-            ]
-            assert omni, f"{model_name} misses vllm-omni virtualenv marker"
-            # vllm-omni does not declare its vllm dependency and requires a
-            # vllm with the same major.minor version, so the spec must pin a
-            # matching vllm alongside it
+            # vllm-omni is not shipped on this branch (V100/SM70 build pins
+            # vllm==0.18.1), where it is not officially supported, so each
+            # vLLM-backed image spec must pin the matching vllm itself
             vllm = [
                 pkg
                 for pkg in packages
                 if pkg.startswith("vllm==") and '#engine# == "vLLM"' in pkg
             ]
-            assert vllm, f"{model_name} misses paired vllm virtualenv pin"
-            omni_ver = omni[0].split(";")[0].strip().split("==")[1]
+            assert vllm, f"{model_name} misses vllm virtualenv pin"
             vllm_ver = vllm[0].split(";")[0].strip().split("==")[1]
-            assert omni_ver == vllm_ver, (
-                f"{model_name}: vllm-omni ({omni_ver}) and vllm ({vllm_ver}) "
-                "pins must share the same version"
+            assert vllm_ver == "0.18.1", (
+                f"{model_name}: vllm pin ({vllm_ver}) must be 0.18.1 "
+                "(V100/SM70 build)"
             )
