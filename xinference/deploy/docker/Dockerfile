@@ -127,6 +127,16 @@ COPY --from=web-builder /opt/inference/xinference/ui/web/dist /opt/inference/xin
 RUN --mount=type=cache,target=/root/.cache/uv \
     NO_WEB_UI=1 uv pip install --system --no-deps --reinstall "."
 
+# 将 pip 安装的 nvidia 拆包运行库（cuDNN/cuSPARSELt 等）注册进动态链接器缓存。
+# per-model venv 内 torch（如 qwen-asr[vllm] 的 2.9.1+cu129）的 RPATH 指向
+# venv 内不存在的 site-packages/nvidia/*/lib 目录，加载器会继续 fallback 到
+# ldconfig 缓存，借此复用镜像中已有的 nvidia-cudnn-cu12，避免
+# ImportError: libcudnn.so.9: cannot open shared object file。
+# 注意：glibc 2.39 的 ldconfig 不展开通配符，须用 find 展开真实目录列表。
+RUN find /usr/local/lib/python3.12/dist-packages/nvidia -mindepth 2 -maxdepth 2 -type d -name lib \
+        > /etc/ld.so.conf.d/xinference-nvidia.conf && \
+    ldconfig
+
 # Parity with previous images: no entrypoint, plain shell by default; deploy
 # commands (xinference-local / supervisor / worker) are passed explicitly.
 ENTRYPOINT []
