@@ -1821,6 +1821,7 @@
       "packages": [
         "qwen-tts",
         "#system_torch#",
+        "#system_torchaudio#",
         "#system_numpy#",
         "#system_pandas#"
       ]
@@ -1852,6 +1853,7 @@
       "packages": [
         "qwen-tts",
         "#system_torch#",
+        "#system_torchaudio#",
         "#system_numpy#",
         "#system_pandas#"
       ]
@@ -1882,6 +1884,7 @@
       "packages": [
         "qwen-tts",
         "#system_torch#",
+        "#system_torchaudio#",
         "#system_numpy#",
         "#system_pandas#"
       ]
@@ -1912,6 +1915,7 @@
       "packages": [
         "qwen-tts",
         "#system_torch#",
+        "#system_torchaudio#",
         "#system_numpy#",
         "#system_pandas#"
       ]
@@ -1942,6 +1946,7 @@
       "packages": [
         "qwen-tts",
         "#system_torch#",
+        "#system_torchaudio#",
         "#system_numpy#",
         "#system_pandas#"
       ]
