@@ -1752,7 +1752,7 @@
     "version": 2,
     "virtualenv": {
       "packages": [
-        "qwen-asr",
+        "qwen-asr ; #engine# == \"transformers\"",
         "qwen-asr[vllm] ; #engine# == \"vLLM\"",
         "#system_torch#",
         "#system_numpy#",
@@ -1787,7 +1787,7 @@
     "version": 2,
     "virtualenv": {
       "packages": [
-        "qwen-asr",
+        "qwen-asr ; #engine# == \"transformers\"",
         "qwen-asr[vllm] ; #engine# == \"vLLM\"",
         "#system_torch#",
         "#system_numpy#",

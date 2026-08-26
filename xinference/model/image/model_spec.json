@@ -1777,10 +1777,11 @@
     "version": 2,
     "virtualenv": {
       "packages": [
-        "git+https://github.com/huggingface/diffusers",
-        "transformers>=4.51.0",
-        "#system_torch#",
-        "#system_numpy#"
+        "git+https://github.com/huggingface/diffusers ; #engine# == \"diffusers\"",
+        "huggingface-hub>=1.23.0,<2.0 ; #engine# == \"diffusers\"",
+        "transformers>=4.51.0 ; #engine# == \"diffusers\"",
+        "#system_torch# ; #engine# == \"diffusers\"",
+        "#system_numpy# ; #engine# == \"diffusers\""
       ],
       "no_build_isolation": true
     },
@@ -1812,10 +1813,11 @@
     "version": 2,
     "virtualenv": {
       "packages": [
-        "git+https://github.com/huggingface/diffusers",
-        "transformers>=4.51.0",
-        "#system_torch#",
-        "#system_numpy#"
+        "git+https://github.com/huggingface/diffusers ; #engine# == \"diffusers\"",
+        "huggingface-hub>=1.23.0,<2.0 ; #engine# == \"diffusers\"",
+        "transformers>=4.51.0 ; #engine# == \"diffusers\"",
+        "#system_torch# ; #engine# == \"diffusers\"",
+        "#system_numpy# ; #engine# == \"diffusers\""
       ],
       "no_build_isolation": true
     },
