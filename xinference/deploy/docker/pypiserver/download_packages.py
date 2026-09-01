@@ -324,7 +324,7 @@ def main() -> None:
     )
     parser.add_argument("--index-url", default="https://pypi.org/simple")
     parser.add_argument(
-        "--pytorch-index", default="https://download.pytorch.org/whl/cu130"
+        "--pytorch-index", default="https://download.pytorch.org/whl/cu129"
     )
     args = parser.parse_args()
 
@@ -412,7 +412,7 @@ def main() -> None:
             python_version=args.python_version,
             python_platform=python_platform,
             index_url=args.index_url,
-            # The pytorch index makes the +cu130 torch pins resolvable for
+            # The pytorch index makes the +cu129 torch pins resolvable for
             # engines whose runtime config has no extra indexes; at runtime
             # everything is served by the single mirror index anyway.
             extra_index_urls=list(

@@ -25,8 +25,8 @@ FROM python:${PYTHON_VERSION}-slim AS downloader
 
 ARG PLATFORM=amd64
 ARG PYTHON_VERSION
-# CUDA versions below 13.0 are not supported.
-ARG CUDA_SUFFIX=cu130
+# CUDA versions below 12.9 are not supported.
+ARG CUDA_SUFFIX=cu129
 
 RUN case "${PLATFORM}" in \
       amd64|arm64) ;; \

@@ -30,10 +30,10 @@ REPO_ROOT = SCRIPT_DIR.parents[3]
 
 def _write_runtime_constraints(path: Path) -> None:
     path.write_text(
-        "torch==2.11.0\n"
-        "torchvision==0.26.0\n"
-        "torchaudio==2.11.0\n"
-        "torchcodec==0.14.0\n"
+        "torch==2.10.0\n"
+        "torchvision==0.25.0\n"
+        "torchaudio==2.10.0\n"
+        "torchcodec==0.10.0\n"
         "transformers==5.13.1\n"
         "accelerate==1.14.0\n"
         "numpy==2.3.5\n"
@@ -170,10 +170,10 @@ def test_selfcheck_wheel_url_to_spec():
 
     assert (
         selfcheck.wheel_url_to_spec(
-            "https://example.com/sgl_kernel-0.3.21%2Bcu130-"
+            "https://example.com/sgl_kernel-0.3.21%2Bcu129-"
             "cp310-abi3-manylinux2014_x86_64.whl"
         )
-        == "sgl_kernel==0.3.21+cu130"
+        == "sgl_kernel==0.3.21+cu129"
     )
     assert selfcheck.wheel_url_to_spec("https://example.com/pkg.tar.gz") is None
     assert selfcheck.wheel_url_to_spec("https://example.com/invalid.whl") is None
@@ -336,7 +336,7 @@ def test_runtime_constraints_require_exact_pins(tmp_path):
     _write_runtime_constraints(constraints)
 
     pins = downloader.load_runtime_constraints(constraints)
-    assert pins["torch"] == "torch==2.11.0"
+    assert pins["torch"] == "torch==2.10.0"
     assert pins["transformers"] == "transformers==5.13.1"
 
     constraints.write_text(constraints.read_text().replace("pandas==3.0.3", "pandas"))
@@ -624,7 +624,7 @@ def test_download_packages_main_orchestration_skips_git(monkeypatch, tmp_path):
     runtime_constraints = tmp_path / "runtime.txt"
     _write_runtime_constraints(runtime_constraints)
     runtime_constraints.write_text(
-        runtime_constraints.read_text().replace("torch==2.11.0", "torch==2.12.3")
+        runtime_constraints.read_text().replace("torch==2.10.0", "torch==2.12.3")
     )
     compile_calls = []
     download_calls = []

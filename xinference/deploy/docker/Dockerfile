@@ -11,7 +11,7 @@
 # What IS baked in, and why:
 #   * Python 3.12 toolchain — runtime interpreter, matches the Python the
 #     per-model venvs are created from.
-#   * torch / torchvision / torchaudio / torchcodec (cu130) — model specs
+#   * torch / torchvision / torchaudio / torchcodec (cu129) — model specs
 #     reference the parent environment's versions via #system_torch#-style
 #     placeholders, which fail if the package is absent; keeping one shared
 #     CUDA torch stack also lets venvs reuse it via
@@ -26,11 +26,11 @@
 #
 # The CUDA *devel* base keeps nvcc and the CUDA headers as a fallback for
 # model venv packages that only ship sdists and compile CUDA extensions on
-# the fly. Requires a host driver supporting CUDA >= 13.0.
+# the fly. Requires a host driver supporting CUDA >= 12.9.
 #
 # This single Dockerfile builds both linux/amd64 and linux/arm64 (the CI
 # aarch64 job builds it on an arm64 runner): the CUDA base image, the
-# deadsnakes Python packages, and every pinned wheel in
+# Ubuntu 24.04 native Python 3.12 packages, and every pinned wheel in
 # requirements-runtime.txt ship both architectures. Keep any additions
 # multi-arch, or gate them on TARGETARCH (declare `ARG TARGETARCH` inside
 # the stage first — undeclared it expands to an empty string).
@@ -52,16 +52,16 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2: runtime image
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:13.0.2-devel-ubuntu22.04
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04
 
 ARG PIP_INDEX=https://pypi.org/simple
-ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu129
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # System packages:
-#   * python3.12 (deadsnakes) — Ubuntu 22.04 ships 3.10, the project runtime
-#     is 3.12; python3.12-dev provides Python.h for sdist builds in venvs.
+#   * python3.12 — Ubuntu 24.04 ships Python 3.12 natively; python3.12-dev
+#     provides Python.h for sdist builds in venvs.
 #   * build-essential / ninja-build — host compiler and build driver for
 #     nvcc runtime JIT (vLLM engine startup shells out to ninja) and for
 #     sdist fallbacks.
@@ -71,24 +71,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   * libgl1 / libglib2.0-0 — required by non-headless opencv variants that
 #     model venvs may pull in.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
-    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
-      | gpg --dearmor -o /usr/share/keyrings/deadsnakes.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" \
-      > /etc/apt/sources.list.d/deadsnakes.list && \
-    apt-get update && \
     apt-get install -y --no-install-recommends \
-      python3.12 python3.12-dev python3.12-venv \
+      ca-certificates curl python3.12 python3.12-dev python3.12-venv \
       build-essential ninja-build git procps \
       ffmpeg libsndfile1 libgl1 libglib2.0-0 && \
     ln -sf /usr/bin/python3.12 /usr/local/bin/python3 && \
     ln -sf /usr/bin/python3.12 /usr/local/bin/python && \
+    rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED && \
     curl -sS https://bootstrap.pypa.io/get-pip.py | python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Shared CUDA torch stack (see header). requirements-runtime.txt is also
 # consumed by the offline pypiserver build, so parent-version constraints can
-# never refer to a version that the mirror omitted. The +cu130 local version is
+# never refer to a version that the mirror omitted. The +cu129 local version is
 # significant: the worker reads it to auto-configure the matching PyTorch
 # wheel index for per-model venv installs. pandas backs the #system_pandas#
 # placeholder used by several audio model specs.
@@ -133,6 +128,16 @@ COPY . /opt/inference
 COPY --from=web-builder /opt/inference/xinference/ui/web/dist /opt/inference/xinference/ui/web/dist
 RUN --mount=type=cache,target=/root/.cache/uv \
     NO_WEB_UI=1 uv pip install --system --no-deps --reinstall "."
+
+# 将 pip 安装的 nvidia 拆包运行库（cuDNN/cuSPARSELt 等）注册进动态链接器缓存。
+# per-model venv 内 torch（如 qwen-asr[vllm] 的 2.9.1+cu129）的 RPATH 指向
+# venv 内不存在的 site-packages/nvidia/*/lib 目录，加载器会继续 fallback 到
+# ldconfig 缓存，借此复用镜像中已有的 nvidia-cudnn-cu12，避免
+# ImportError: libcudnn.so.9: cannot open shared object file。
+# 注意：glibc 2.39 的 ldconfig 不展开通配符，须用 find 展开真实目录列表。
+RUN find /usr/local/lib/python3.12/dist-packages/nvidia -mindepth 2 -maxdepth 2 -type d -name lib \
+        > /etc/ld.so.conf.d/xinference-nvidia.conf && \
+    ldconfig
 
 # Parity with previous images: no entrypoint, plain shell by default; deploy
 # commands (xinference-local / supervisor / worker) are passed explicitly.

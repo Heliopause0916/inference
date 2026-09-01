@@ -23,7 +23,7 @@ never drift from what the runtime actually installs. Only ``pydantic``,
 
 Usage:
     python generate_package_lists.py --platform amd64 --out /tmp/out
-    python generate_package_lists.py --platform arm64 --cuda-version 13.0 \
+    python generate_package_lists.py --platform arm64 --cuda-version 12.9 \
         --src-root /path/to/repo --out /tmp/out
 
 Outputs (under --out):
@@ -191,7 +191,7 @@ def engine_file_name(engine: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", required=True, choices=("amd64", "arm64"))
-    parser.add_argument("--cuda-version", default="13.0")
+    parser.add_argument("--cuda-version", default="12.9")
     parser.add_argument(
         "--exclude-engines",
         default="mlx",
