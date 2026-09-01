@@ -110,6 +110,7 @@ from .utils import (
 )
 from .virtual_env_manager import VirtualEnvManager as XinferenceVirtualEnvManager
 from .virtual_env_manager import (
+    ensure_diffusers_transformers_pin,
     ensure_system_torch_pin,
     expand_engine_dependency_placeholders,
     get_engine_critical_dependency_specs,
@@ -3121,6 +3122,12 @@ class WorkerActor(xo.StatelessActor):
         # (issue #5156).
         packages = ensure_system_torch_pin(packages)
         packages = pin_sentence_transformers_numpy_abi(packages, model_engine)
+
+        # The diffusers engine installs its own huggingface-hub<1.0 but no
+        # transformers, so the venv would inherit the parent image's
+        # transformers 5.x via --system-site-packages and crash at import
+        # against the older hub (cannot import name 'is_offline_mode').
+        packages = ensure_diffusers_transformers_pin(packages, model_engine)
 
         conf = dict(settings)
         conf.pop("packages", None)

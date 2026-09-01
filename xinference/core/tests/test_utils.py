@@ -24,8 +24,10 @@ from ..utils import (
     parse_replica_model_uid,
 )
 from ..virtual_env_manager import (
+    DIFFUSERS_TRANSFORMERS_SPEC,
     ENGINE_VIRTUALENV_PACKAGES,
     XLLAMACPP_CUDA_INDEX_URLS,
+    ensure_diffusers_transformers_pin,
     ensure_system_torch_pin,
     get_xllamacpp_cuda_index_url,
     pin_sentence_transformers_numpy_abi,
@@ -574,6 +576,123 @@ def test_pin_sentence_transformers_numpy_abi_preserves_explicit_requirements(
 def test_pin_sentence_transformers_numpy_abi_other_engine_is_noop():
     packages = ["xllamacpp"]
     assert pin_sentence_transformers_numpy_abi(packages, "llama.cpp") is packages
+
+
+def test_ensure_diffusers_transformers_pin_injects_when_missing():
+    # diffusers engine without an explicit transformers spec gets a venv-local
+    # 4.x pin so the parent's transformers 5.x is not inherited via
+    # --system-site-packages (hf_hub is_offline_mode ImportError).
+    packages = ["diffusers>=0.32.0", "huggingface-hub<1.0"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result[: len(packages)] == packages
+    assert result[len(packages) :] == [DIFFUSERS_TRANSFORMERS_SPEC]
+    assert DIFFUSERS_TRANSFORMERS_SPEC.endswith(",<5")
+
+
+def test_ensure_diffusers_transformers_pin_upgrades_unbounded_transformers():
+    # An unbounded transformers>=4.51.0 would be satisfied by the inherited
+    # 5.x copy and skipped; under the huggingface-hub<1.0 trigger the line is
+    # upgraded in place with ",<5" and the original line disappears.
+    packages = ["transformers>=4.51.0", "huggingface-hub<1.0", "diffusers>=0.32.0"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == [
+        "transformers>=4.51.0,<5",
+        "huggingface-hub<1.0",
+        "diffusers>=0.32.0",
+    ]
+
+
+def test_ensure_diffusers_transformers_pin_upgrades_transformers_with_marker():
+    # An engine-guarded transformers spec also gets the ",<5" upper bound while
+    # its environment marker is preserved verbatim.
+    packages = [
+        "diffusers",
+        'transformers>=4.51.0 ; #engine# == "diffusers"',
+        "huggingface-hub<1.0",
+    ]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == [
+        "diffusers",
+        'transformers>=4.51.0,<5 ; #engine# == "diffusers"',
+        "huggingface-hub<1.0",
+    ]
+
+
+def test_ensure_diffusers_transformers_pin_noop_when_transformers_has_upper_bound():
+    # A transformers spec that already forbids 5.0 needs no intervention even
+    # under the huggingface-hub<1.0 trigger.
+    packages = ["transformers>=4.51.0,<5", "diffusers", "huggingface-hub<1.0"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == packages
+
+
+def test_ensure_diffusers_transformers_pin_noop_with_wider_hub_range():
+    # FLUX.2-klein regression: huggingface-hub>=1.23.0,<2.0 can install 1.x, so
+    # an inherited transformers 5.x is compatible and nothing may be touched.
+    packages = ["transformers>=4.51.0", "huggingface-hub>=1.23.0,<2.0", "diffusers"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == packages
+
+
+def test_ensure_diffusers_transformers_pin_noop_for_url_transformers():
+    # A direct URL/direct reference line is already fixed to a specific
+    # archive/commit, so it must not be rewritten even though it can resolve
+    # to 5.x.
+    packages = [
+        "transformers @ git+https://example.com/transformers.git@v4.52.0",
+        "huggingface-hub<1.0",
+        "diffusers",
+    ]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == packages
+
+
+def test_ensure_diffusers_transformers_pin_noop_when_other_engine():
+    packages = ["xllamacpp"]
+    assert ensure_diffusers_transformers_pin(packages, "llama.cpp") is packages
+
+
+def test_ensure_diffusers_transformers_pin_noop_without_engine():
+    packages = ["diffusers>=0.32.0"]
+    assert ensure_diffusers_transformers_pin(packages, None) is packages
+
+
+def test_ensure_diffusers_transformers_pin_replaces_bare_transformers():
+    # A bare "transformers" line (no version) permits any version including
+    # 5.x, so under the huggingface-hub<1.0 trigger it is replaced wholesale by
+    # the pinned spec rather than kept.
+    packages = ["transformers", "huggingface-hub<1.0", "diffusers"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == [
+        DIFFUSERS_TRANSFORMERS_SPEC,
+        "huggingface-hub<1.0",
+        "diffusers",
+    ]
+
+
+def test_ensure_diffusers_transformers_pin_empty():
+    assert ensure_diffusers_transformers_pin([], "diffusers") == []
+
+
+def test_ensure_diffusers_transformers_pin_upgrades_transformers_not_exact_5():
+    # A "!=5.0" spec still admits the parent's transformers 5.13.1, so it is
+    # not treated as protected and gets the ",<5" upper bound like any other
+    # unbounded line.
+    packages = ["transformers!=5.0", "huggingface-hub<1.0", "diffusers>=0.32.0"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert "transformers!=5.0,<5" in result
+
+
+def test_ensure_diffusers_transformers_pin_triggers_on_compatible_upper_bound():
+    # "~=0.9" expands to ">=0.9,<1.0": hub can only resolve below 1.0, so the
+    # pin triggers and a missing transformers line gets DIFFUSERS_TRANSFORMERS_SPEC.
+    packages = ["huggingface-hub~=0.9"]
+    result = ensure_diffusers_transformers_pin(packages, "diffusers")
+    assert result == ["huggingface-hub~=0.9", DIFFUSERS_TRANSFORMERS_SPEC]
+    # "~=1.2.0" expands to ">=1.2.0,<2.0": hub can resolve 1.x, so a pairing
+    # with transformers is left untouched.
+    packages = ["transformers>=4.51.0", "huggingface-hub~=1.2.0"]
+    assert ensure_diffusers_transformers_pin(packages, "diffusers") == packages
 
 
 def test_build_subpool_envs_for_virtual_env_disabled():

@@ -17,7 +17,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..constants import XINFERENCE_VIRTUAL_ENV_DIR
 
@@ -66,6 +66,12 @@ ENGINE_VIRTUALENV_PACKAGES: Dict[str, List[str]] = {
         "xllamacpp>=0.2.6",
     ],
 }
+
+# Venv-local transformers spec for the diffusers engine. The parent image ships
+# transformers 5.x, which is incompatible with the huggingface-hub<1.0 that the
+# diffusers venv installs; the upper bound forces the venv to install its own
+# 4.x copy instead of inheriting the 5.x one via --system-site-packages.
+DIFFUSERS_TRANSFORMERS_SPEC = "transformers>=4.51.0,<5"
 
 # Optional engine packages selected by model format. Unlike
 # ENGINE_VIRTUALENV_PACKAGES, these are not installed for every model using an
@@ -287,6 +293,178 @@ def ensure_system_torch_pin(packages: List[str]) -> List[str]:
             torch_entry,
         )
     return packages + to_inject
+
+
+def ensure_diffusers_transformers_pin(
+    packages: List[str], model_engine: Optional[str]
+) -> List[str]:
+    """Force a venv-local transformers 4.x for the diffusers engine.
+
+    The parent environment (Docker image) ships no inference engine but bakes a
+    very new transformers (requirements-runtime.txt pins transformers==5.x).
+    The diffusers venv installs its own diffusers and huggingface-hub (``<1.0``)
+    without a compatible transformers spec, so under ``--system-site-packages`` +
+    skip_installed the model subprocess inherits the parent's transformers 5.x,
+    which requires a huggingface-hub API (``is_offline_mode``) the venv's older
+    hub does not provide, and the model fails to load with an ImportError.
+
+    The pin only triggers when the collected packages actually restrict
+    huggingface-hub to below 1.0 (e.g. the engine's ``huggingface-hub<1.0``).
+    Specs that pair transformers with a hub range wide enough for 1.x (e.g.
+    ``huggingface-hub>=1.23.0,<2.0`` on FLUX.2-klein) are left untouched, and a
+    bare ``huggingface-hub`` line never triggers on its own.
+
+    With the trigger active, transformers lines are forced to forbid 5.x:
+    - no transformers line at all -> ``DIFFUSERS_TRANSFORMERS_SPEC`` is appended;
+    - unbounded lines (``transformers>=4.51.0``) are upgraded in place with a
+      ``,<5`` bound, preserving any environment marker; bare ``transformers``
+      lines are replaced by ``DIFFUSERS_TRANSFORMERS_SPEC``;
+    - lines that already forbid 5.0 (e.g. ``transformers>=4.51.0,<5``) or that
+      pin through a direct URL/direct reference (`` @ ``) are left untouched.
+
+    An upper bound is essential: an unbounded ``transformers>=4.51.0`` is
+    satisfied by the inherited 5.x copy and would be skipped, leaving the
+    broken mix in place. The ``<5`` bound forces the venv to install its own
+    4.x copy, which satisfies diffusers' declared requirement and matches the
+    venv's ``huggingface-hub<1.0``. Parse failures never raise: lines whose
+    spec cannot be proven to forbid 5.0 are treated as unprotected (upgraded),
+    so the function degrades to the safe injection path rather than crashing.
+    """
+    if not packages or not model_engine or model_engine.lower() != "diffusers":
+        return packages
+
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    def _requirement_name(pkg: str) -> Optional[str]:
+        # Best-effort package name for a plain requirement string like
+        # "transformers>=4.51.0" or "transformers ; marker".
+        head = pkg.split(";", 1)[0].strip()
+        if not head or head.startswith("#"):
+            return None
+        for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "[", " "):
+            if sep in head:
+                head = head.split(sep, 1)[0]
+                break
+        return head.strip().lower() or None
+
+    def _requirement_name_and_spec(pkg: str) -> Tuple[Optional[str], str]:
+        # Like _requirement_name but also returns the text after the package
+        # name (before any ";" environment marker), e.g. ">=4.51.0" for
+        # "transformers>=4.51.0 ; #engine# == \"diffusers\"".
+        head = pkg.split(";", 1)[0].strip()
+        if not head or head.startswith("#"):
+            return None, ""
+        name = head
+        for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "[", " "):
+            idx = head.find(sep)
+            if idx != -1:
+                name = head[:idx]
+                break
+        return name.strip().lower() or None, head[len(name) :].strip()
+
+    def _only_allows_below_1_0(spec: str) -> bool:
+        # Does this version spec forbid installing any huggingface-hub 1.x?
+        # True when the spec carries a "<"/"<=" upper bound at or below 1.0, an
+        # exact "==" pin below 1.0, or a "~=" compatible range below 1.0 (e.g.
+        # "~=0.26" expands to ">=0.26,<1.0"), and no ">="/">" lower bound at or
+        # above 1.0: "<1.0" -> True, "~=0.26" -> True, ">=1.23.0,<2.0" -> False,
+        # "" (bare) -> False.
+        if not spec:
+            return False
+        upper_bound_ok = False
+        lower_bound_blocks = False
+        for operator, version in re.findall(
+            r"(<=|>=|==|!=|~=|<|>)\s*([0-9A-Za-z.+\-!]+)", spec
+        ):
+            try:
+                parsed = Version(version)
+            except Exception:
+                continue
+            if operator in ("<", "<="):
+                if parsed <= Version("1.0"):
+                    upper_bound_ok = True
+            elif operator == "==":
+                if parsed < Version("1.0"):
+                    upper_bound_ok = True
+            elif operator == "~=":
+                if parsed < Version("1.0"):
+                    upper_bound_ok = True
+            elif operator in (">", ">="):
+                if parsed >= Version("1.0"):
+                    lower_bound_blocks = True
+        return upper_bound_ok and not lower_bound_blocks
+
+    # Trigger condition: the diffusers venv ships huggingface-hub pinned below
+    # 1.0, so an inherited transformers 5.x would require hub APIs the venv
+    # lacks. Without such a constraint the model already pairs transformers
+    # with a hub copy that can handle 5.x, so nothing to fix.
+    hub_capped = False
+    for pkg in packages:
+        name, spec = _requirement_name_and_spec(pkg)
+        if name in ("huggingface-hub", "huggingface_hub") and _only_allows_below_1_0(
+            spec
+        ):
+            hub_capped = True
+            break
+    if not hub_capped:
+        return packages
+
+    transformers_entries = [
+        pkg for pkg in packages if _requirement_name(pkg) == "transformers"
+    ]
+    if not transformers_entries:
+        logger.info(
+            "Pinning %s into the diffusers virtual env: the parent transformers "
+            "5.x is incompatible with the venv's huggingface-hub<1.0 and would "
+            "fail at import otherwise",
+            DIFFUSERS_TRANSFORMERS_SPEC,
+        )
+        return packages + [DIFFUSERS_TRANSFORMERS_SPEC]
+
+    def _blocks_5_0(pkg: str) -> bool:
+        # A transformers line is considered already protected only when its
+        # spec (before any ";" marker) allows neither 5.0 nor the parent
+        # image's actual transformers 5.13.1 (``!=5.0`` alone still admits
+        # 5.13.1 and must be upgraded); a direct URL/direct reference line
+        # (" @ ") counts as already fixed, and an empty or unparsable spec
+        # counts as unprotected.
+        head = pkg.split(";", 1)[0].strip()
+        if " @ " in head:
+            return True
+        _, spec = _requirement_name_and_spec(pkg)
+        if not spec:
+            return False
+        try:
+            ss = SpecifierSet(spec)
+            return not (
+                ss.contains(Version("5.0"), prereleases=True)
+                or ss.contains(Version("5.13.1"), prereleases=True)
+            )
+        except Exception:
+            return False
+
+    protected_entries = {pkg for pkg in transformers_entries if _blocks_5_0(pkg)}
+    to_upgrade = [pkg for pkg in transformers_entries if pkg not in protected_entries]
+    if not to_upgrade:
+        return packages
+
+    def _with_upper_bound(pkg: str) -> str:
+        # Preserve the environment marker while forcing a "<5" upper bound; a
+        # bare "transformers" line becomes DIFFUSERS_TRANSFORMERS_SPEC.
+        head, separator, marker = pkg.partition(";")
+        name, spec = _requirement_name_and_spec(head)
+        upgraded = DIFFUSERS_TRANSFORMERS_SPEC if not spec else f"{name}{spec},<5"
+        return f"{upgraded} ; {marker.strip()}" if separator else upgraded
+
+    upgraded_entries = {pkg: _with_upper_bound(pkg) for pkg in to_upgrade}
+    logger.info(
+        "Forcing a transformers 5.x upper bound in the diffusers virtual env "
+        "because the parent transformers 5.x is incompatible with the venv's "
+        "huggingface-hub<1.0; upgraded: %s",
+        [f"{old} -> {new}" for old, new in upgraded_entries.items()],
+    )
+    return [upgraded_entries.get(pkg, pkg) for pkg in packages]
 
 
 def pin_sentence_transformers_numpy_abi(
