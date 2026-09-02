@@ -304,6 +304,8 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
         else:
             self._quantize_transformer()
 
+        self._maybe_load_multi_gpu_shards()
+
         if self._has_bnb_quantization and not self._kwargs.get("device_map"):
             # Ensure bnb-loaded modules are placed explicitly on one device to avoid CPU/GPU mixing
             self._kwargs["device_map"] = get_available_device()
@@ -533,6 +535,114 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
             torch_dtype=torch_dtype,
         )
         self._kwargs["transformer"] = transformer_model
+
+    def _maybe_load_multi_gpu_shards(self) -> None:
+        # Opt-in, off by default: shard large components across GPUs with a
+        # model-level device_map instead of pipeline-level whole-component placement
+        split_transformer_multi_gpu = self._kwargs.pop(
+            "split_transformer_multi_gpu", False
+        )
+        transformer_max_memory = self._kwargs.pop("transformer_max_memory", None)
+        if not split_transformer_multi_gpu:
+            logger.debug("split_transformer_multi_gpu is disabled")
+            return
+
+        if gpu_count() <= 1:
+            logger.warning(
+                "split_transformer_multi_gpu=True requires >1 GPU, "
+                "fall back to single-device loading"
+            )
+            return
+
+        if (
+            self._kwargs.get("transformer") is not None
+            or self._gguf_model_path
+            or self._has_bnb_quantization
+        ):
+            logger.warning(
+                "Skip multi-gpu sharding: incompatible with injected/quantized "
+                "transformer, gguf path or bnb quantization"
+            )
+            return
+
+        # accelerate model-level sharding places blocks on separate devices, so
+        # inter-block activations move over device-to-device links instead of PCIe
+        max_memory = {i: "16GiB" for i in range(gpu_count())}
+        if transformer_max_memory:
+            try:
+                capacities = [s.strip() for s in transformer_max_memory.split(",")]
+            except AttributeError:
+                logger.warning(
+                    "transformer_max_memory=%r is not a string, use default %s",
+                    transformer_max_memory,
+                    max_memory,
+                )
+            else:
+                if len(capacities) != gpu_count():
+                    logger.warning(
+                        "transformer_max_memory has %d entries, gpu_count()=%d; "
+                        "use provided entries as-is (device indices 0..%d)",
+                        len(capacities),
+                        gpu_count(),
+                        len(capacities) - 1,
+                    )
+                max_memory = {i: cap for i, cap in enumerate(capacities)}
+
+        transformer_model = None
+        try:
+            logger.info(
+                "Preload transformer with model-level multi-gpu sharding: "
+                "device_map=auto, max_memory=%s",
+                max_memory,
+            )
+            transformer_model = self._get_layer_cls("transformer").from_pretrained(
+                self._model_path,
+                subfolder="transformer",
+                torch_dtype=self._torch_dtype,
+                device_map="auto",
+                max_memory=max_memory,
+            )
+        except Exception:
+            if transformer_model is not None:
+                del transformer_model
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.error(
+                "Failed to shard transformer across GPUs, residual VRAM may "
+                "remain; restart the worker and retry",
+                exc_info=True,
+            )
+            raise
+        self._kwargs["transformer"] = transformer_model
+        logger.info(
+            "Only transformer/text_encoder are pre-sharded across GPUs; "
+            "other components use pipeline-level device_map"
+        )
+
+        # text_encoder is best-effort: keep an already injected instance as-is
+        if self._kwargs.get("text_encoder") is not None:
+            logger.info("text_encoder already injected (e.g. quantized), use as-is")
+        else:
+            try:
+                text_encoder_cls = self._get_layer_cls("text_encoder")
+                logger.info(
+                    "Preload text_encoder with model-level multi-gpu sharding: "
+                    "device_map=auto"
+                )
+                # 8GiB/card is enough to spread Qwen2.5-VL (~16.6GiB total)
+                self._kwargs["text_encoder"] = text_encoder_cls.from_pretrained(
+                    self._model_path,
+                    subfolder="text_encoder",
+                    torch_dtype=self._torch_dtype,
+                    device_map="auto",
+                    max_memory={i: "8GiB" for i in range(gpu_count())},
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to multi-gpu shard text_encoder: %s, "
+                    "fall back to pipeline-level placement",
+                    e,
+                )
 
     def _quantize_transformer_gguf(self):
         from diffusers import GGUFQuantizationConfig
