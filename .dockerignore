@@ -14,7 +14,6 @@ frontend/out/
 .ruff_cache/
 .coverage
 coverage.xml
-.git
 .venv
 *.log
 xinference/ui/web/dist/
