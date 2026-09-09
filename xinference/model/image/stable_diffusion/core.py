@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+import functools
 import gc
 import importlib
 import inspect
@@ -24,6 +25,8 @@ import math
 import os
 import re
 import sys
+import threading
+import types
 import warnings
 from glob import glob
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
@@ -125,6 +128,18 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
         self._gguf_model_path = gguf_model_path
         # lightning
         self._lightning_model_path = lightning_model_path
+        # opt-in text_encoder release/reload (release_text_encoder_after_use)
+        self._release_text_encoder_after_use = False
+        self._text_encoder_reload_kwargs: Optional[Dict] = None
+        # set once a lazy reload fails: release/reload paths are then disabled
+        # and concurrent _call_model threads (asyncio.to_thread) must not race
+        self._text_encoder_reload_failed = False
+        # original exception of a sticky reload failure, re-raised on later calls
+        self._text_encoder_reload_error: Optional[Exception] = None
+        self._text_encoder_lock = threading.Lock()
+        # opt-in vae fp16 autocast (vae_fp16_autocast)
+        self._vae_fp16_autocast = False
+        self._orig_vae_decode: Optional[Any] = None
 
     @property
     def model_ability(self):
@@ -377,6 +392,9 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
             self._load_to_device(self._model)
             self._apply_lora()
 
+        # opt-in: wrap vae.decode with fp16 autocast after the pipeline is ready
+        self._apply_vae_fp16_autocast()
+
         if self._kwargs.get("deepcache", False):
             try:
                 from DeepCache import DeepCacheSDHelper
@@ -543,6 +561,13 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
             "split_transformer_multi_gpu", False
         )
         transformer_max_memory = self._kwargs.pop("transformer_max_memory", None)
+        release_text_encoder_after_use = self._kwargs.pop(
+            "release_text_encoder_after_use", False
+        )
+        vae_fp16_autocast = self._kwargs.pop("vae_fp16_autocast", False)
+        # vae_fp16_autocast is independent of multi-gpu sharding, keep it here so
+        # all new opt-in flags are popped in one place before pipeline loading
+        self._vae_fp16_autocast = vae_fp16_autocast
         if not split_transformer_multi_gpu:
             logger.debug("split_transformer_multi_gpu is disabled")
             return
@@ -637,12 +662,65 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
                     device_map="auto",
                     max_memory={i: "8GiB" for i in range(gpu_count())},
                 )
+                # Cache the reload inputs so the text_encoder shard can be
+                # dropped after inference and lazily reloaded before the next
+                # call when release_text_encoder_after_use is enabled (opt-in,
+                # mostly relevant for Qwen-Image VAE-decode OOM).
+                self._text_encoder_reload_kwargs = {
+                    "cls": text_encoder_cls,
+                    "model_path": self._model_path,
+                    "subfolder": "text_encoder",
+                    "torch_dtype": self._torch_dtype,
+                    "device_map": "auto",
+                    "max_memory": {i: "8GiB" for i in range(gpu_count())},
+                }
+                if release_text_encoder_after_use:
+                    self._release_text_encoder_after_use = True
+                    logger.info(
+                        "release_text_encoder_after_use enabled: text_encoder "
+                        "will be released after each inference and lazily reloaded"
+                    )
             except Exception as e:
                 logger.warning(
                     "Failed to multi-gpu shard text_encoder: %s, "
                     "fall back to pipeline-level placement",
                     e,
                 )
+
+    def _apply_vae_fp16_autocast(self) -> None:
+        # Opt-in, off by default: wrap pipeline.vae.decode with fp16 autocast so
+        # the transient VAE 3D conv workspace peak is halved; the denoising
+        # dtype is untouched (only the vae component is patched).
+        if self._orig_vae_decode is not None:
+            # already patched; keep load() re-entry idempotent so the closure
+            # does not stack another wrapper on top of the current one
+            return
+        if not self._vae_fp16_autocast:
+            return
+        pipeline = self._model
+        vae = getattr(pipeline, "vae", None)
+        decode = getattr(vae, "decode", None)
+        if not callable(decode):
+            logger.warning(
+                "vae_fp16_autocast enabled but pipeline has no callable "
+                "vae.decode; skip patching"
+            )
+            return
+
+        @functools.wraps(decode)
+        @torch.no_grad()
+        def wrapped_decode(_vae_self, *args, **kwargs):
+            # A fresh autocast context per call keeps concurrent _call_model
+            # threads (asyncio.to_thread) isolated; no_grad stays consistent
+            # with diffusers' internal use.
+            with torch.autocast("cuda", dtype=torch.float16):
+                return decode(*args, **kwargs)
+
+        # Bound via MethodType so self.vae.decode(latents) from diffusers
+        # dispatches latents into *args and the original decode receives it.
+        vae.decode = types.MethodType(wrapped_decode, vae)  # type: ignore[method-assign]
+        self._orig_vae_decode = decode
+        logger.info("Patched vae.decode with fp16 autocast (vae_fp16_autocast=True)")
 
     def _quantize_transformer_gguf(self):
         from diffusers import GGUFQuantizationConfig
@@ -913,17 +991,24 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
             # rejects passing that default together with a constant scale.
             kwargs.setdefault("guidance_schedule", None)
         assert callable(model)
-        with (
-            self._reset_when_done(model, sampler_name),
-            self._release_after(),
-            self._wrap_deepcache(model),
-        ):
-            logger.debug("stable diffusion args: %s, model: %s", kwargs, model)
-            # Some pipelines (e.g., Z-Image img2img) can't handle guidance_scale=None.
-            if kwargs.get("guidance_scale", "unset") is None:
-                kwargs.pop("guidance_scale", None)
-            self._filter_kwargs(model, kwargs)
-            images = model(**kwargs).images
+        # opt-in: lazily reload the released text_encoder shard before inference
+        self._maybe_reload_text_encoder(model)
+        try:
+            with (
+                self._reset_when_done(model, sampler_name),
+                self._release_after(),
+                self._wrap_deepcache(model),
+            ):
+                logger.debug("stable diffusion args: %s, model: %s", kwargs, model)
+                # Some pipelines (e.g., Z-Image img2img) can't handle guidance_scale=None.
+                if kwargs.get("guidance_scale", "unset") is None:
+                    kwargs.pop("guidance_scale", None)
+                self._filter_kwargs(model, kwargs)
+                images = model(**kwargs).images
+        finally:
+            # opt-in: release the text_encoder shard right after inference so
+            # static per-card VRAM drops until the next call reloads it
+            self._maybe_release_text_encoder(model)
 
         if images and isinstance(images[0], (list, tuple)):
             images = list(itertools.chain.from_iterable(images))
@@ -940,6 +1025,91 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
             return images
 
         return handle_image_result(response_format, images)
+
+    def _maybe_reload_text_encoder(self, pipeline: Any) -> None:
+        # Opt-in (release_text_encoder_after_use): lazily reload the multi-gpu
+        # text_encoder shard released after the previous inference call.
+        if not self._release_text_encoder_after_use:
+            return
+        if self._text_encoder_reload_failed:
+            # sticky failure: previously failed while releasing, so never retry
+            # a 30s+ from_pretrained per request. If a concurrent caller already
+            # reloaded the shard, keep the resident copy and continue as-is.
+            if getattr(pipeline, "text_encoder", None) is None:
+                raise RuntimeError(
+                    "text_encoder reload failed earlier and "
+                    "release_text_encoder_after_use has been disabled; "
+                    "restart the model or relaunch without "
+                    "release_text_encoder_after_use to recover"
+                ) from self._text_encoder_reload_error
+            return
+        if not self._text_encoder_reload_kwargs:
+            logger.debug(
+                "release_text_encoder_after_use enabled but no cached reload "
+                "kwargs for text_encoder; skip"
+            )
+            return
+        with self._text_encoder_lock:
+            if self._text_encoder_reload_failed:
+                # a queued thread may reach the lock right after a failure;
+                # do not trigger another 30s+ from_pretrained in this request
+                return
+            # double-check under the lock so concurrent _call_model threads
+            # (asyncio.to_thread) do not start two parallel ~16.6GiB loads
+            if getattr(pipeline, "text_encoder", None) is not None:
+                return
+            try:
+                reload_kwargs = dict(self._text_encoder_reload_kwargs)
+                text_encoder_cls = reload_kwargs.pop("cls")
+                model_path = reload_kwargs.pop("model_path")
+                subfolder = reload_kwargs.pop("subfolder")
+                pipeline.text_encoder = text_encoder_cls.from_pretrained(
+                    model_path, subfolder=subfolder, **reload_kwargs
+                )
+                # This branch is unreachable once the sticky flag is set (both
+                # pre-checks return early), so the flag is never reset here; any
+                # copy left by a prior caller is kept as resident-mode fallback.
+                logger.info("Lazily reloaded text_encoder before inference")
+            except Exception as e:
+                # Sticky failure: disable release/reload so subsequent requests
+                # fail fast instead of retrying per request. Re-raise so the
+                # real error surfaces to the caller/log.
+                self._text_encoder_reload_failed = True
+                self._text_encoder_reload_error = e
+                self._release_text_encoder_after_use = False
+                logger.warning(
+                    "Failed to reload text_encoder; disabling "
+                    "release_text_encoder_after_use: %s",
+                    e,
+                )
+                raise
+
+    def _maybe_release_text_encoder(self, pipeline: Any) -> None:
+        # Opt-in (release_text_encoder_after_use): drop the text_encoder shard
+        # after inference so static per-card VRAM drops until the next call.
+        if not self._release_text_encoder_after_use:
+            return
+        if self._text_encoder_reload_failed:
+            return
+        released = False
+        with self._text_encoder_lock:
+            try:
+                text_encoder = getattr(pipeline, "text_encoder", None)
+                if text_encoder is not None:
+                    del text_encoder
+                    pipeline.text_encoder = None
+                    released = True
+            except Exception as e:
+                logger.warning(
+                    "Failed to release text_encoder after inference: %s",
+                    e,
+                    exc_info=True,
+                )
+        if released:
+            # empty_cache can be slow; keep it outside the lock so queued
+            # reload threads are not stalled behind it
+            torch.cuda.empty_cache()
+            logger.debug("Released text_encoder after inference")
 
     @classmethod
     def _filter_kwargs(cls, model, kwargs: dict):
