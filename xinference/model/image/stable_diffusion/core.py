@@ -136,7 +136,9 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
         self._text_encoder_reload_failed = False
         # original exception of a sticky reload failure, re-raised on later calls
         self._text_encoder_reload_error: Optional[Exception] = None
-        self._text_encoder_lock = threading.Lock()
+        # created in load(): threading.Lock is not picklable and this light
+        # shell instance is cloudpickled across processes to the venv subpool
+        self._text_encoder_lock = None
         # opt-in vae fp16 autocast (vae_fp16_autocast)
         self._vae_fp16_autocast = False
         self._orig_vae_decode: Optional[Any] = None
@@ -394,6 +396,11 @@ class DiffusionModel(SDAPIDiffusionModelMixin):
 
         # opt-in: wrap vae.decode with fp16 autocast after the pipeline is ready
         self._apply_vae_fp16_autocast()
+        # create the reload/release lock only after load(): threading.Lock
+        # must not survive cross-process cloudpickle (see __init__), and load()
+        # runs single-threaded in the venv subpool process so every later
+        # _call_model path observes this instance
+        self._text_encoder_lock = threading.Lock()
 
         if self._kwargs.get("deepcache", False):
             try:
